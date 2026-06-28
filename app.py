@@ -146,10 +146,11 @@ def check_and_trigger_inline_siphon(trigger_acc, current_diamonds):
             balance = ud["diamonds"]
             acc["diamonds"] = balance
             
-            # Condition: Siphon any account that has strictly more than the 5 diamond floor minimum
-            if balance > 5:
-                dynamic_price = balance - 5  # Leaves exactly 5 diamonds behind in the wallet
-                emit_log(f"🔮 [Sweep] Found {balance} 💎 on Alt [{u}]. Harvesting {dynamic_price} 💎...")
+            # FIX: Only run the siphon if the wallet has 5 or more diamonds. Anything less is skipped!
+            if balance >= 5:
+                # FIX: Set price to the exact full balance to drain 100% of the diamonds out
+                dynamic_price = balance  
+                emit_log(f"🔮 [Sweep] Found {balance} 💎 on Alt [{u}]. Executing 100% drain payload...")
                 
                 # Authenticate receiver session to list the transfer vehicle asset
                 if receiver_acc and receiver_acc.get("password"):
@@ -158,37 +159,39 @@ def check_and_trigger_inline_siphon(trigger_acc, current_diamonds):
                     recv_sess = get_auth_session(locked_user, p)
 
                 if not recv_sess:
-                    recv_sess = get_auth_session(u, p) # Ultimate handshake proxy vehicle fallback
+                    recv_sess = get_auth_session(u, p)
                     
                 if not recv_sess:
                     emit_log(f"❌ Skipped [{u}]: Failed to verify receiver network tokens.")
                     continue
 
-                # Place market listing order
+                # Place market listing order for 100% of the wallet value
                 list_payload = {"action": "list", "creatureId": locked_asset, "price": dynamic_price, "priceType": "diamonds"}
                 list_req = recv_sess.post(ENDPOINTS["trade"], json=list_payload, timeout=10)
                 
                 if list_req.status_code == 200:
-                    emit_log(f"Asset listed for {dynamic_price} 💎. Executing transaction from Alt...")
+                    emit_log(f"Asset listed for full balance of {dynamic_price} 💎. Executing transaction from Alt...")
                     time.sleep(1.2)  # Cooldown propagation wait step buffer
                     
-                    # FIX: We use the existing 'sess' structure directly instead of re-logging in and breaking tokens!
                     buy_payload = {"action": "buy", "creatureId": locked_asset}
                     buy_req = sess.post(ENDPOINTS["trade"], json=buy_payload, timeout=10)
                     
                     if buy_req.status_code == 200:
                         time.sleep(3.2)  # Secure action cooldown timing bypass
                         
-                        emit_log(f"Gifting asset back to [{locked_user}]...")
+                        emit_log(f"Gifting tracking asset back to [{locked_user}]...")
                         gift_payload = {"action": "gift", "creatureId": locked_asset, "toUsername": locked_user}
                         sess.post(ENDPOINTS["trade"], json=gift_payload, timeout=10)
                         
-                        acc["diamonds"] = 5  # Update local screen layout tracker context state
-                        emit_log(f"🎉 Sweep Success! Extracted diamonds from [{u}]. Wallet preserved at 5 💎.")
+                        acc["diamonds"] = 0  # Wallet is fully drained down to 0
+                        emit_log(f"🎉 Sweep Success! Extracted all {dynamic_price} 💎 from [{u}]. Wallet cleared out.")
                     else:
-                        emit_log(f"❌ Buy transaction rejected for Alt [{u}]. Server response status: {buy_req.status_code}")
+                        emit_log(f"❌ Buy transaction rejected for Alt [{u}]. Response code: {buy_req.status_code}")
                 else:
-                    emit_log(f"❌ Failed to list trade vehicle from receiver main profile. Status code: {list_req.status_code}")
+                    emit_log(f"❌ Failed to list trade vehicle from receiver main profile. Response code: {list_req.status_code}")
+            else:
+                # Log when an account is skipped for not meeting the minimum balance required to siphon
+                emit_log(f"ℹ️ Skipped [{u}]: Balance ({balance} 💎) is under the 5 💎 minimum floor threshold.")
                     
     except Exception as e:
         emit_log(f"❌ Internal exception occurred inside global automation sweep layer: {str(e)}")
@@ -196,7 +199,7 @@ def check_and_trigger_inline_siphon(trigger_acc, current_diamonds):
     emit_log("▶️ Global autopilot sweep complete. Resuming farming loop pipelines smoothly...")
     STATE["status"] = old_status
     STATE["is_siphoning_interactively"] = False
-
+    
 def process_account_farm(acc, batch):
     if STATE["stop_farming_process"]: return
     
