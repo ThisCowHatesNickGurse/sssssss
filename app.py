@@ -104,98 +104,98 @@ def run_single_game_session(session):
     except Exception: return False
 
 # --- Auto-Interleaved Siphon Injector Routine ---
-def check_and_trigger_inline_siphon(acc, current_diamonds):
-    # Gate 1: Only trigger the harvesting procedure initially if the balance hits 50+ diamonds
+def check_and_trigger_inline_siphon(trigger_acc, current_diamonds):
+    # Gate 1: Only initiate the global harvest sweep if the triggering account hits 50+ diamonds
     if current_diamonds < 50: return
     
     if not STATE["receiver_username"] or not STATE["receiver_asset_id"]:
-        emit_log(f"⚠️ [{acc['username']}] reached {current_diamonds} 💎 but Siphon was skipped because no receiver target is locked!")
+        emit_log(f"⚠️ [{trigger_acc['username']}] reached {current_diamonds} 💎 but sweep was skipped because no receiver target is locked!")
         return
 
-    # Anti-Duplicate Lock: Prevent an account from stacking duplicate thread siphons and triggering 429 errors
-    if "active_siphon_username" not in STATE:
-        STATE["active_siphon_username"] = None
-        
-    if STATE["active_siphon_username"] == acc["username"] or STATE["is_siphoning_interactively"]:
+    if STATE["is_siphoning_interactively"]:
         return
 
-    # Activate atomic synchronization locks
+    # Activate atomic synchronization locks for a full global sweep
     STATE["is_siphoning_interactively"] = True
-    STATE["active_siphon_username"] = acc["username"]
-    
     old_status = STATE["status"]
-    STATE["status"] = "AUTOPILOT SIPHONING"
+    STATE["status"] = "GLOBAL AUTOPILOT SWEEP"
     
-    u, p = acc["username"], acc["password"]
     locked_user = STATE["receiver_username"]
     locked_asset = STATE["receiver_asset_id"]
 
-    emit_log(f"🚨 ALERT: [{u}] triggered automated harvest threshold with {current_diamonds} 💎!")
-    emit_log("⏸️ Pausing the farming pipeline execution thread context safely...")
-    emit_log(f"🔮 Deploying single dynamic siphon extraction payload directly onto [{u}]...")
+    emit_log(f"🚨 GLOBAL SWEEP TRIGGERED: [{trigger_acc['username']}] hit {current_diamonds} 💎!")
+    emit_log("⏸️ Pausing farming pipeline threads. Scanning all alternative wallets...")
 
     try:
+        # Get receiver account profile information
         receiver_acc = next((a for a in STATE["accounts"] if a["username"] == locked_user), None)
         
-        if receiver_acc and receiver_acc.get("password"):
-            recv_sess = get_auth_session(receiver_acc["username"], receiver_acc["password"])
-        else:
-            emit_log(f"ℹ️ Target [{locked_user}] credential map missing from active thread stack.")
-            recv_sess = get_auth_session(locked_user, p)
-
-        if not recv_sess:
-            emit_log("⚠️ Secondary re-authentication failed. Attempting immediate inline override...")
-            recv_sess = get_auth_session(u, p)
-
-        sess = get_auth_session(u, p)
-        if sess and recv_sess:
-            ud = fetch_user_data(sess)
-            if ud:
-                balance = ud["diamonds"]
-                acc["diamonds"] = balance
-                
-                # Rule: Harvest the wallet value but ensure the wallet keeps at least 5 diamonds inside it
-                if balance >= 50:
-                    dynamic_price = balance - 5  # Leaves exactly 5 diamonds behind in the wallet minimum
-                    
-                    if dynamic_price <= 0:
-                        emit_log("Siphon payload bypassed: calculation left insufficient funds.")
-                    else:
-                        emit_log(f"Listing asset from Receiver account dynamically for calculated extraction: {dynamic_price} 💎...")
-                        
-                        list_payload = {"action": "list", "creatureId": locked_asset, "price": dynamic_price, "priceType": "diamonds"}
-                        list_req = recv_sess.post(ENDPOINTS["trade"], json=list_payload, timeout=10)
-                        
-                        if list_req.status_code == 200:
-                            emit_log("Asset listed on market index successfully. Triggering single purchase handshake...")
-                            
-                            time.sleep(1.5)  # Short safety buffer before execution to mitigate 429 collision limits
-                            sess = get_auth_session(u, p)
-                            buy_payload = {"action": "buy", "creatureId": locked_asset}
-                            
-                            if sess and sess.post(ENDPOINTS["trade"], json=buy_payload, timeout=10).status_code == 200:
-                                time.sleep(3.5)  # Preserved trade cooldown buffer action boundary
-                                emit_log("Gifting tracking asset back to target main receiver...")
-                                gift_payload = {"action": "gift", "creatureId": locked_asset, "toUsername": locked_user}
-                                sess.post(ENDPOINTS["trade"], json=gift_payload, timeout=10)
-                                
-                                acc["diamonds"] = 5  # Mirror the remaining wallet floor minimum to UI state
-                                emit_log(f"🎉 Harvest Success! Extracted {dynamic_price} 💎 safely. 5 💎 minimum preserved.")
-                            else: emit_log("❌ Automated buy handler transaction rejected or timed out.")
-                        else: emit_log(f"❌ Automated market placement request failed. Status code: {list_req.status_code}")
-        else:
-            emit_log("❌ Critical Error: Could not verify cross-session network tokens for pipeline transfer.")
+        # Loop through EVERY account inside local server memory registry
+        for acc in STATE["accounts"]:
+            if acc["username"] == locked_user: continue
             
+            u, p = acc["username"], acc["password"]
+            
+            # Authenticate alternative account session 
+            sess = get_auth_session(u, p)
+            if not sess: continue
+            
+            ud = fetch_user_data(sess)
+            if not ud: continue
+            
+            balance = ud["diamonds"]
+            acc["diamonds"] = balance
+            
+            # Condition: Siphon any account that has strictly more than the 5 diamond floor minimum
+            if balance > 5:
+                dynamic_price = balance - 5  # Leaves exactly 5 diamonds behind in the wallet
+                emit_log(f"🔮 [Sweep] Found {balance} 💎 on Alt [{u}]. Harvesting {dynamic_price} 💎...")
+                
+                # Authenticate receiver session to list the transfer vehicle asset
+                if receiver_acc and receiver_acc.get("password"):
+                    recv_sess = get_auth_session(receiver_acc["username"], receiver_acc["password"])
+                else:
+                    recv_sess = get_auth_session(locked_user, p)
+
+                if not recv_sess:
+                    recv_sess = get_auth_session(u, p) # Ultimate handshake proxy vehicle fallback
+                    
+                if not recv_sess:
+                    emit_log(f"❌ Skipped [{u}]: Failed to verify receiver network tokens.")
+                    continue
+
+                # Place market listing order
+                list_payload = {"action": "list", "creatureId": locked_asset, "price": dynamic_price, "priceType": "diamonds"}
+                list_req = recv_sess.post(ENDPOINTS["trade"], json=list_payload, timeout=10)
+                
+                if list_req.status_code == 200:
+                    emit_log(f"Asset listed for {dynamic_price} 💎. Executing transaction from Alt...")
+                    time.sleep(1.2)  # Cooldown propagation wait step buffer
+                    
+                    # FIX: We use the existing 'sess' structure directly instead of re-logging in and breaking tokens!
+                    buy_payload = {"action": "buy", "creatureId": locked_asset}
+                    buy_req = sess.post(ENDPOINTS["trade"], json=buy_payload, timeout=10)
+                    
+                    if buy_req.status_code == 200:
+                        time.sleep(3.2)  # Secure action cooldown timing bypass
+                        
+                        emit_log(f"Gifting asset back to [{locked_user}]...")
+                        gift_payload = {"action": "gift", "creatureId": locked_asset, "toUsername": locked_user}
+                        sess.post(ENDPOINTS["trade"], json=gift_payload, timeout=10)
+                        
+                        acc["diamonds"] = 5  # Update local screen layout tracker context state
+                        emit_log(f"🎉 Sweep Success! Extracted diamonds from [{u}]. Wallet preserved at 5 💎.")
+                    else:
+                        emit_log(f"❌ Buy transaction rejected for Alt [{u}]. Server response status: {buy_req.status_code}")
+                else:
+                    emit_log(f"❌ Failed to list trade vehicle from receiver main profile. Status code: {list_req.status_code}")
+                    
     except Exception as e:
-        emit_log(f"❌ Internal anomaly occurred inside autopilot processing logic: {str(e)}")
+        emit_log(f"❌ Internal exception occurred inside global automation sweep layer: {str(e)}")
 
-    emit_log("▶️ Resuming the automated farming pipeline loops smoothly...")
+    emit_log("▶️ Global autopilot sweep complete. Resuming farming loop pipelines smoothly...")
     STATE["status"] = old_status
-    
-    # Release synchronization variables to prepare for the next profile milestone trigger event
-    STATE["active_siphon_username"] = None
     STATE["is_siphoning_interactively"] = False
-
 
 def process_account_farm(acc, batch):
     if STATE["stop_farming_process"]: return
