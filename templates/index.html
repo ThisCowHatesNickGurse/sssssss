@@ -22,6 +22,7 @@
         .log-console { background: #1e1e2e; border: 1px solid #44475a; height: 160px; overflow-y: auto; font-family: monospace; padding: 8px; font-size: 11px; border-radius: 4px; white-space: pre-wrap; }
         .account-row { background: #21222c; border: 1px solid #44475a; padding: 8px; border-radius: 4px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
         .btn-sm { padding: 4px 8px; font-size: 11px; border-radius: 3px; border: none; cursor: pointer; font-weight: bold; }
+        .action-container { display: flex; gap: 4px; margin-top: 4px; }
     </style>
 </head>
 <body>
@@ -75,6 +76,16 @@
         function updateSiphonPrice(val) { axios.post('/update-price', {price: val}); }
         function selectTarget(user) { axios.post('/set-target', {username: user}); }
 
+        function copyToClipboard(str) {
+            const el = document.createElement('textarea');
+            el.value = str;
+            document.body.appendChild(el);
+            el.select();
+            document.execCommand('copy');
+            document.body.removeChild(el);
+            alert('Copied credentials: ' + str);
+        }
+
         function updateDashboard() {
             axios.get('/state').then(res => {
                 const data = res.data;
@@ -93,12 +104,16 @@
 
                 let accHtml = '';
                 data.accounts.forEach(acc => {
+                    const rawCreds = acc.username + ':' + acc.password;
                     accHtml += `<div class="account-row">
                         <div>
                             <strong>${acc.username}</strong><br>
                             <span style="color:var(--green)">💎 ${acc.diamonds || 0} | 🏆 ${acc.points || 0} Pts</span>
+                            <div class="action-container">
+                                <button class="btn-sm btn-sub" onclick="selectTarget('${acc.username}')">🎯 Target</button>
+                                <button class="btn-sm" style="background:#8be9fd;color:#282a36;" onclick="copyToClipboard('${rawCreds}')">📋 Copy</button>
+                            </div>
                         </div>
-                        <button class="btn-sm btn-sub" onclick="selectTarget('${acc.username}')">🎯 Target</button>
                     </div>`;
                 });
                 document.getElementById('accounts-list').innerHTML = accHtml;
