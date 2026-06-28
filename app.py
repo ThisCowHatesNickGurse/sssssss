@@ -265,23 +265,34 @@ def background_farm_loop():
 
         if not STATE["stop_farming_process"] and STATE["chk_exchange"]:
             while STATE["is_siphoning_interactively"]: time.sleep(0.5)
-            emit_log("🔒 Third batch completed. Redeeming reward structures across profiles...")
+            emit_log("🔒 Third batch completed. Running multi-redemption loop across profiles...")
+            
             def redeem(acc):
                 sess = get_auth_session(acc["username"], acc["password"])
                 if sess:
                     ud = fetch_user_data(sess)
-                    if ud and ud["infinityRunPoints"] >= 900:
-                        try:
-                            payload = {"rewardId": "reward-7", "pointsCost": 900, "rewardType": "diamonds", "rewardValue": 5, "rarity": ""}
-                            sess.post(ENDPOINTS["exchange"], json=payload, timeout=10)
-                            ud = fetch_user_data(sess) or ud
-                            acc["diamonds"] = ud["diamonds"]
-                            acc["points"] = ud["infinityRunPoints"]
-                            emit_log(f"[{acc['username']}] Payout successful! Diamonds: {ud['diamonds']}")
-                            
-                            # Catch case where post-payout pushes alt to 50+ diamonds instantly
-                            check_and_trigger_inline_siphon(acc, ud["diamonds"])
-                        except Exception: pass
+                    if ud:
+                        current_pts = ud["infinityRunPoints"]
+                        # FIX: Loop to burn ALL available point surpluses down below 900
+                        while current_pts >= 900 and not STATE["stop_farming_process"]:
+                            try:
+                                emit_log(f"[{acc['username']}] Burning points balance surplus ({current_pts} Pts remaining)...")
+                                payload = {"rewardId": "reward-7", "pointsCost": 900, "rewardType": "diamonds", "rewardValue": 5, "rarity": ""}
+                                res = sess.post(ENDPOINTS["exchange"], json=payload, timeout=10)
+                                if res.status_code != 200: break
+                                
+                                next_ud = fetch_user_data(sess)
+                                if not next_ud or next_ud["infinityRunPoints"] == current_pts: break
+                                ud = next_ud
+                                current_pts = ud["infinityRunPoints"]
+                                acc["diamonds"] = ud["diamonds"]
+                                acc["points"] = ud["infinityRunPoints"]
+                                emit_log(f"[{acc['username']}] Redeem successful! Wallet: {ud['diamonds']} 💎 | {current_pts} Pts")
+                            except Exception:
+                                break
+                        
+                        # Check if point conversion pushed them into global sweep conditions
+                        check_and_trigger_inline_siphon(acc, ud["diamonds"])
 
             with ThreadPoolExecutor(max_workers=max(1, len(STATE["accounts"]))) as ex:
                 ex.map(redeem, STATE["accounts"])
@@ -299,6 +310,8 @@ def background_farm_loop():
     STATE["batch_phase"] = "Batch 0/3"
     STATE["countdown"] = 0
     emit_log("🏁 Farming engine operations suspended.")
+
+
 
 # --- Flask Routing Matrix ---
 @app.route('/')
@@ -394,7 +407,7 @@ def refresh_stats():
     passed_accounts = request.json.get("accounts", [])
     if not passed_accounts: return jsonify({"error": "No accounts provided"}), 400
     
-    emit_log("Starting balance synchronization and point check engine...")
+    emit_log("Starting balance synchronization and multi-point check engine...")
     updated_list = []
 
     def refresh_worker():
@@ -404,13 +417,21 @@ def refresh_stats():
             if sess:
                 ud = fetch_user_data(sess)
                 if ud:
-                    if ud["infinityRunPoints"] >= 900:
-                        emit_log(f"[{u}] Has {ud['infinityRunPoints']} points. Converting to diamonds...")
+                    current_pts = ud["infinityRunPoints"]
+                    # FIX: Apply the consecutive looping fix to manual stat refreshing too!
+                    while current_pts >= 900:
+                        emit_log(f"[{u}] Clearing point balance surplus ({current_pts} Pts remaining)...")
                         try:
                             payload = {"rewardId": "reward-7", "pointsCost": 900, "rewardType": "diamonds", "rewardValue": 5, "rarity": ""}
-                            sess.post(ENDPOINTS["exchange"], json=payload, timeout=10)
-                            ud = fetch_user_data(sess) or ud
-                        except Exception: pass
+                            res = sess.post(ENDPOINTS["exchange"], json=payload, timeout=10)
+                            if res.status_code != 200: break
+                            
+                            next_ud = fetch_user_data(sess)
+                            if not next_ud or next_ud["infinityRunPoints"] == current_pts: break
+                            ud = next_ud
+                            current_pts = ud["infinityRunPoints"]
+                        except Exception:
+                            break
                     
                     acc["diamonds"] = ud["diamonds"]
                     acc["points"] = ud["infinityRunPoints"]
@@ -424,7 +445,7 @@ def refresh_stats():
 
     GLOBAL_EXECUTOR.submit(refresh_worker)
     return jsonify({"success": True})
-
+    
 @app.route('/execute-siphon', methods=['POST'])
 def execute_siphon():
     req_data = request.get_json(force=True) or {}
