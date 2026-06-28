@@ -113,7 +113,9 @@ def run_single_game_session(session):
 def process_account_farm(acc, batch):
     if STATE["stop_farming_process"]: return
     u = acc["username"]
-    sess = get_auth_session(u, acc["password"])
+    p = acc["password"]  # Keep a strict backup of the password
+    
+    sess = get_auth_session(u, p)
     if not sess: return
 
     user_data = fetch_user_data(sess)
@@ -135,8 +137,11 @@ def process_account_farm(acc, batch):
 
     updated = fetch_user_data(sess)
     if updated:
+        acc["username"] = u
+        acc["password"] = p  # Explicitly force the password to stay intact!
         acc["diamonds"] = updated["diamonds"]
         acc["points"] = updated["infinityRunPoints"]
+
 
 def background_farm_loop():
     STATE["status"] = "RUNNING QUEUE"
