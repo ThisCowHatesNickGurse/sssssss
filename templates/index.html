@@ -51,7 +51,11 @@
             <h3 style="color:var(--accent);margin-bottom:4px;">🔑 External Account Target Siphon</h3>
             <input type="text" id="ext-username" placeholder="External Main Account Username">
             <input type="password" id="ext-password" placeholder="External Main Account Password">
-            <input type="text" id="ext-target-alt" placeholder="Target Alt Account Username (Click 'Select Sender' below)" readonly>
+            <button class="btn-sm btn-sub" style="width:100%; padding:10px; margin-bottom:6px; background:#8be9fd; color:#282a36;" onclick="fetchExternalAssets()">🔍 Fetch External Assets</button>
+            <div style="display: flex; gap: 4px; margin: 4px 0;">
+                <input type="text" id="ext-target-asset-cache" placeholder="Ext Asset Locked: None" style="flex:1;" readonly>
+                <input type="text" id="ext-target-alt" placeholder="Sender Alt" style="width:120px;" readonly>
+            </div>
             <button class="btn btn-sub" style="background:var(--accent);color:#1e1e2e;" onclick="executeExternalSiphon()">🌌 Execute External Siphon Handshake</button>
         </div>
 
@@ -126,12 +130,19 @@
             document.getElementById('ext-target-alt').value = user;
         }
 
+        function fetchExternalAssets() {
+            let user = document.getElementById('ext-username').value.trim();
+            let pass = document.getElementById('ext-password').value.trim();
+            if(!user || !pass) return alert("Please enter the external account user and password fields first.");
+            axios.post('/fetch-external-assets', { external_username: user, external_password: pass });
+        }
+
         function executeExternalSiphon() {
             let user = document.getElementById('ext-username').value.trim();
             let pass = document.getElementById('ext-password').value.trim();
             let altSender = document.getElementById('ext-target-alt').value.trim();
 
-            if (!user || !pass || !altSender) return alert("Please fill out external credentials and pick an alt sender card profile below.");
+            if (!user || !pass || !altSender) return alert("Please type external credentials, click 'Fetch External Assets', and select a card profile sender below.");
             
             axios.post('/execute-external-siphon', {
                 external_username: user,
@@ -180,6 +191,7 @@
                 document.getElementById('total-accs').innerText = 'Managed: ' + localAccs.length;
                 document.getElementById('target-user').value = data.receiver_username ? 'Receiver: ' + data.receiver_username : '';
                 document.getElementById('target-asset').value = data.receiver_asset_id ? 'Asset: ' + data.receiver_asset_id : '';
+                document.getElementById('ext-target-asset-cache').value = data.ext_receiver_asset_id ? 'ID: ' + data.ext_receiver_asset_id : '';
                 
                 const logBox = document.getElementById('log-output');
                 const isScrolledToBottom = logBox.scrollHeight - logBox.clientHeight <= logBox.scrollTop + 1;
@@ -204,7 +216,7 @@
                 document.getElementById('accounts-list').innerHTML = accHtml;
             }).catch(err => {});
         }
-        
+
         setInterval(() => {
             let accs = getLocalAccounts();
             if(accs.length > 0) { axios.post('/sync-accounts', { accounts: accs }); }
