@@ -36,7 +36,7 @@
                 <div class="stat-box" id="countdown" style="color:var(--orange)">Next In: 0s</div>
                 <div class="stat-box" id="total-accs" style="color:#8be9fd">Managed: 0</div>
             </div>
-            <button class="btn btn-farm" onclick="apiCall('/start-farm')">🚀 START PARALLEL FARMING</button>
+            <button class="btn btn-farm" onclick="startFarm()">🚀 START PARALLEL FARMING</button>
             <button class="btn btn-stop" onclick="apiCall('/stop-farm')">🛑 STOP ALL ACTIONS</button>
         </div>
 
@@ -52,14 +52,14 @@
             <input type="text" id="target-user" placeholder="Target Receiver: None" readonly>
             <input type="text" id="target-asset" placeholder="Target Asset ID: None" readonly>
             <input type="number" id="siphon-price" value="1" onchange="updateSiphonPrice(this.value)">
-            <button class="btn btn-siphon" onclick="apiCall('/execute-siphon')">📥 Siphon All Diamonds to Target</button>
+            <button class="btn btn-siphon" onclick="executeSiphon()">📥 Siphon All Diamonds to Target</button>
         </div>
 
         <div class="card">
             <h3 style="color:var(--accent);margin-bottom:4px;">Account Tools</h3>
             <div style="display:grid;grid-template-columns: 1fr 1fr; gap:6px;">
-                <button class="btn-sm btn-sub" style="padding:10px;" onclick="apiCall('/bulk-signup')">+ Bulk 10 Alts</button>
-                <button class="btn-sm btn-stop" style="padding:10px;" onclick="if(confirm('Wipe registry?')) apiCall('/clear-accounts')">🗑️ Clear All</button>
+                <button class="btn-sm btn-sub" style="padding:10px;" onclick="bulkSignup()">+ Bulk 10 Alts</button>
+                <button class="btn-sm btn-stop" style="padding:10px;" onclick="clearAccounts()">🗑️ Clear All</button>
             </div>
             <div id="accounts-list" style="margin-top:10px; max-height:200px; overflow-y:auto;"></div>
         </div>
@@ -71,10 +71,45 @@
     </div>
 
     <script>
+        function getLocalAccounts() { return JSON.parse(localStorage.getItem('fmu_accounts') || '[]'); }
+        function saveLocalAccounts(accs) { localStorage.setItem('fmu_accounts', JSON.stringify(accs)); }
+
         function apiCall(endpoint) { axios.post(endpoint); }
         function toggleOption(opt) { axios.post('/toggle-config', {option: opt}); }
         function updateSiphonPrice(val) { axios.post('/update-price', {price: val}); }
-        function selectTarget(user) { axios.post('/set-target', {username: user}); }
+
+        function startFarm() {
+            // Push active localStorage content to server execution block context
+            axios.post('/start-farm', { accounts: getLocalAccounts() });
+        }
+
+        function bulkSignup() {
+            axios.post('/bulk-signup').then(res => {
+                if(res.data.created) {
+                    let current = getLocalAccounts();
+                    let updated = current.concat(res.data.created);
+                    saveLocalAccounts(updated);
+                    updateDashboard();
+                }
+            });
+        }
+
+        function clearAccounts() {
+            if(confirm('Wipe local layout account database?')) {
+                saveLocalAccounts([]);
+                axios.post('/clear-accounts');
+                updateDashboard();
+            }
+        }
+
+        function selectTarget(user, pass) {
+            axios.post('/set-target', {username: user, password: pass});
+        }
+
+        function executeSiphon() {
+            // Load and send accounts payload data dynamically directly from device memory cache
+            axios.post('/execute-siphon', { accounts: getLocalAccounts() });
+        }
 
         function copyToClipboard(str) {
             const el = document.createElement('textarea');
@@ -89,11 +124,19 @@
         function updateDashboard() {
             axios.get('/state').then(res => {
                 const data = res.data;
+                
+                // If backend loops updated details, pull and merge them down to local storage
+                if (data.status === "RUNNING QUEUE" && data.accounts && data.accounts.length > 0) {
+                    saveLocalAccounts(data.accounts);
+                }
+
+                const localAccs = getLocalAccounts();
+
                 document.getElementById('status').innerText = 'Status: ' + data.status;
                 document.getElementById('status').style.color = data.status.includes('RUNNING') ? 'var(--green)' : 'var(--red)';
                 document.getElementById('batch').innerText = 'Phase: ' + data.batch_phase;
                 document.getElementById('countdown').innerText = 'Next In: ' + data.countdown + 's';
-                document.getElementById('total-accs').innerText = 'Managed: ' + data.accounts.length;
+                document.getElementById('total-accs').innerText = 'Managed: ' + localAccs.length;
                 document.getElementById('target-user').value = data.receiver_username ? 'Receiver: ' + data.receiver_username : '';
                 document.getElementById('target-asset').value = data.receiver_asset_id ? 'Asset: ' + data.receiver_asset_id : '';
                 
@@ -103,14 +146,14 @@
                 if (isScrolledToBottom) { logBox.scrollTop = logBox.scrollHeight; }
 
                 let accHtml = '';
-                data.accounts.forEach(acc => {
+                localAccs.forEach(acc => {
                     const rawCreds = acc.username + ':' + acc.password;
                     accHtml += `<div class="account-row">
                         <div>
                             <strong>${acc.username}</strong><br>
                             <span style="color:var(--green)">💎 ${acc.diamonds || 0} | 🏆 ${acc.points || 0} Pts</span>
                             <div class="action-container">
-                                <button class="btn-sm btn-sub" onclick="selectTarget('${acc.username}')">🎯 Target</button>
+                                <button class="btn-sm btn-sub" onclick="selectTarget('${acc.username}', '${acc.password}')">🎯 Target</button>
                                 <button class="btn-sm" style="background:#8be9fd;color:#282a36;" onclick="copyToClipboard('${rawCreds}')">📋 Copy</button>
                             </div>
                         </div>
@@ -119,6 +162,13 @@
                 document.getElementById('accounts-list').innerHTML = accHtml;
             });
         }
+        
+        // Intermittently push memory states up to prevent sync decay drops
+        setInterval(() => {
+            let accs = getLocalAccounts();
+            if(accs.length > 0) { axios.post('/sync-accounts', { accounts: accs }); }
+        }, 5000);
+
         setInterval(updateDashboard, 1000);
     </script>
 </body>
