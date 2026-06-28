@@ -106,37 +106,62 @@ def run_single_game_session(session):
     except Exception: return False
 
 def check_and_trigger_inline_siphon(trigger_acc, current_diamonds):
+    # Gate 1: Only initiate the global harvest sweep if the triggering account hits 50+ diamonds
     if current_diamonds < 50: return
+    
+    # FIX: If the account that hit 50+ diamonds is the main destination receiver, ignore it completely!
+    if trigger_acc["username"] == STATE["receiver_username"]:
+        emit_log(f"ℹ️ [{trigger_acc['username']}] reached {current_diamonds} 💎 but sweep was ignored because this is the primary destination account.")
+        return
+        
+    if STATE.get("ext_receiver_username") and trigger_acc["username"] == STATE["ext_receiver_username"]:
+        emit_log(f"ℹ️ [{trigger_acc['username']}] reached {current_diamonds} 💎 but sweep was ignored because this is the external destination account.")
+        return
+    
     if not STATE["receiver_username"] or not STATE["receiver_asset_id"]:
         emit_log(f"⚠️ [{trigger_acc['username']}] reached {current_diamonds} 💎 but sweep was skipped because no receiver target is locked!")
         return
-    if STATE["is_siphoning_interactively"]: return
 
+    if STATE["is_siphoning_interactively"]:
+        return
+
+    # Activate atomic synchronization locks for a full global sweep
     STATE["is_siphoning_interactively"] = True
     old_status = STATE["status"]
     STATE["status"] = "GLOBAL AUTOPILOT SWEEP"
     
     locked_user = STATE["receiver_username"]
     locked_asset = STATE["receiver_asset_id"]
+    ext_locked_user = STATE.get("ext_receiver_username", "")
 
     emit_log(f"🚨 GLOBAL SWEEP TRIGGERED: [{trigger_acc['username']}] hit {current_diamonds} 💎!")
     emit_log("⏸️ Pausing farming pipeline threads. Scanning all alternative wallets...")
 
     try:
+        # Get receiver account profile information
         receiver_acc = next((a for a in STATE["accounts"] if a["username"] == locked_user), None)
         
+        # Loop through EVERY account inside local server memory registry
         for acc in STATE["accounts"]:
-            if acc["username"] == locked_user: continue
+            # Skip destination accounts inside the processing loop too
+            if acc["username"] == locked_user:
+                continue
+            if ext_locked_user and acc["username"] == ext_locked_user:
+                continue
+            
             u, p = acc["username"], acc["password"]
             
+            # Authenticate alternative account session 
             sess = get_auth_session(u, p)
             if not sess: continue
+            
             ud = fetch_user_data(sess)
             if not ud: continue
             
             balance = ud["diamonds"]
             acc["diamonds"] = balance
             
+            # Only run the siphon if the wallet has 5 or more diamonds
             if balance >= 5:
                 dynamic_price = balance  
                 emit_log(f"🔮 [Sweep] Found {balance} 💎 on Alt [{u}]. Executing 100% drain payload...")
@@ -151,6 +176,7 @@ def check_and_trigger_inline_siphon(trigger_acc, current_diamonds):
                     emit_log(f"❌ Skipped [{u}]: Failed to verify receiver network tokens.")
                     continue
 
+                # Place market listing order for 100% of the wallet value
                 list_payload = {"action": "list", "creatureId": locked_asset, "price": dynamic_price, "priceType": "diamonds"}
                 list_req = recv_sess.post(ENDPOINTS["trade"], json=list_payload, timeout=10)
                 
@@ -163,14 +189,17 @@ def check_and_trigger_inline_siphon(trigger_acc, current_diamonds):
                     
                     if buy_req.status_code == 200:
                         time.sleep(3.2)
+                        
                         emit_log(f"Gifting tracking asset back to [{locked_user}]...")
                         gift_payload = {"action": "gift", "creatureId": locked_asset, "toUsername": locked_user}
                         sess.post(ENDPOINTS["trade"], json=gift_payload, timeout=10)
                         
                         acc["diamonds"] = 0
                         emit_log(f"🎉 Sweep Success! Extracted all {dynamic_price} 💎 from [{u}]. Wallet cleared out.")
-                    else: emit_log(f"❌ Buy transaction rejected for Alt [{u}]. Response code: {buy_req.status_code}")
-                else: emit_log(f"❌ Failed to list trade vehicle from receiver main profile. Response code: {list_req.status_code}")
+                    else:
+                        emit_log(f"❌ Buy transaction rejected for Alt [{u}]. Response code: {buy_req.status_code}")
+                else:
+                    emit_log(f"❌ Failed to list trade vehicle from receiver main profile. Response code: {list_req.status_code}")
             else:
                 emit_log(f"ℹ️ Skipped [{u}]: Balance ({balance} 💎) is under the 5 💎 minimum floor threshold.")
                     
@@ -180,6 +209,7 @@ def check_and_trigger_inline_siphon(trigger_acc, current_diamonds):
     emit_log("▶️ Global autopilot sweep complete. Resuming farming loop pipelines smoothly...")
     STATE["status"] = old_status
     STATE["is_siphoning_interactively"] = False
+
 
 def process_account_farm(acc, batch):
     if STATE["stop_farming_process"]: return
