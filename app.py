@@ -103,9 +103,9 @@ def run_single_game_session(session):
         if not start_data.get("success"): return False
         
         game_token = start_data.get("gameToken")
-        time.sleep(9.1)
+        time.sleep(3.1)  # Adjusted from 9.1 to 3.1 seconds
 
-        sub_req = session.post(ENDPOINTS["submit"], json={"score": 900, "gameToken": game_token}, timeout=10)
+        sub_req = session.post(ENDPOINTS["submit"], json={"score": 30, "gameToken": game_token}, timeout=10)  # Adjusted from 900 to 30 score
         return sub_req.status_code == 200
     except Exception:
         return False
@@ -127,7 +127,7 @@ def process_account_farm(acc, batch):
         for f in futures:
             if f.result(): passes += 1
 
-    acc["points"] = user_data["infinityRunPoints"] + (passes * 900)
+    acc["points"] = user_data["infinityRunPoints"] + (passes * 30)  # Updated score accumulation math
 
     if STATE["chk_collect"]:
         try: sess.post(ENDPOINTS["collect"], json={}, timeout=10)
