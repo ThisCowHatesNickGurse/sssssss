@@ -290,27 +290,43 @@ def bulk_signup():
 
 @app.route('/execute-siphon', methods=['POST'])
 def execute_siphon():
-    # Requirement: Read dynamic account list configurations passed entirely via the localStorage HTTP request
-    passed_accounts = request.json.get("accounts", [])
+    # Force strict extraction of payload parameters directly at the route entrypoint
+    req_data = request.get_json(force=True) or {}
+    passed_accounts = req_data.get("accounts", [])
+    
+    # Fallback to local memory state matrix if the cache layer packet drops
     if not passed_accounts:
-        return jsonify({"error": "No accounts data passed from client storage layout"}), 400
+        passed_accounts = STATE["accounts"]
+
+    if not passed_accounts:
+        emit_log("⚠️ Siphon Aborted: No accounts found in request payload or server memory.")
+        return jsonify({"error": "No accounts available"}), 400
         
     if not STATE["receiver_username"] or not STATE["receiver_asset_id"]:
+        emit_log("⚠️ Siphon Aborted: Target parameters are empty. Ensure a receiver target is locked.")
         return jsonify({"error": "No receiver targets verified"}), 400
+        
     try: price = int(STATE["siphon_price"])
     except ValueError: return jsonify({"error": "Invalid price"}), 400
 
-    def worker():
-        emit_log(f"🔮 Initializing Pre-Owned Asset Extraction Matrix targeting [{STATE['receiver_username']}]...")
-        receiver_acc = next((a for a in passed_accounts if a["username"] == STATE["receiver_username"]), None)
+    # Capture tracking parameters locally to insulate the worker thread from UI mutations
+    target_user = STATE["receiver_username"]
+    target_asset = STATE["receiver_asset_id"]
+
+    def worker(accounts_to_process, locked_user, locked_asset):
+        emit_log(f"🔮 Initializing Pre-Owned Asset Extraction Matrix targeting [{locked_user}]...")
+        
+        receiver_acc = next((a for a in accounts_to_process if a["username"] == locked_user), None)
         if not receiver_acc:
-            emit_log(f"⚠️ Target [{STATE['receiver_username']}] not matching local registry list. Bypassing fallback checks...")
-            receiver_acc = {"username": STATE["receiver_username"], "password": ""}
+            emit_log(f"ℹ️ Target [{locked_user}] not found in tracking cache. Constructing session framework...")
+            receiver_acc = {"username": locked_user, "password": ""}
 
-        for acc in passed_accounts:
+        processed_count = 0
+        for acc in accounts_to_process:
             if STATE["stop_farming_process"]: break
-            if acc["username"] == STATE["receiver_username"]: continue
+            if acc["username"] == locked_user: continue
 
+            processed_count += 1
             emit_log(f"Logging into Alt [{acc['username']}] to verify balances...")
             sess = get_auth_session(acc["username"], acc["password"])
             if not sess:
@@ -337,7 +353,7 @@ def execute_siphon():
                     emit_log("Fatal: Receiver primary account validation step failed! Check credentials.")
                     break
 
-                list_payload = {"action": "list", "creatureId": STATE["receiver_asset_id"], "price": price, "priceType": "diamonds"}
+                list_payload = {"action": "list", "creatureId": locked_asset, "price": price, "priceType": "diamonds"}
                 if recv_sess.post(ENDPOINTS["trade"], json=list_payload, timeout=10).status_code != 200:
                     emit_log("Error executing listing request from Receiver account.")
                     break
@@ -349,7 +365,7 @@ def execute_siphon():
                     break
                 
                 emit_log("Executing buy transaction from Alt account...")
-                buy_payload = {"action": "buy", "creatureId": STATE["receiver_asset_id"]}
+                buy_payload = {"action": "buy", "creatureId": locked_asset}
                 if sess.post(ENDPOINTS["trade"], json=buy_payload, timeout=10).status_code != 200:
                     emit_log("Buy transaction rejected. The listing may have expired or failed.")
                     break
@@ -358,7 +374,7 @@ def execute_siphon():
                 time.sleep(3.0)
                 
                 emit_log("Gifting asset back to the Receiver account...")
-                gift_payload = {"action": "gift", "creatureId": STATE["receiver_asset_id"], "toUsername": STATE["receiver_username"]}
+                gift_payload = {"action": "gift", "creatureId": locked_asset, "toUsername": locked_user}
                 if sess.post(ENDPOINTS["trade"], json=gift_payload, timeout=10).status_code != 200:
                     emit_log("Warning: Gift sequence returned non-OK. Check for action cooldowns.")
                 
@@ -366,10 +382,12 @@ def execute_siphon():
                 acc["diamonds"] = balance
                 emit_log(f"Successfully moved {price} 💎 to target and returned pet!")
 
-        emit_log("✨ Siphon matrix sequence fully complete.")
+        emit_log(f"✨ Siphon matrix sequence complete. Processed {processed_count} alternative accounts.")
 
-    GLOBAL_EXECUTOR.submit(worker)
+    # Pass explicit deep copies directly inside the thread context allocation invocation
+    GLOBAL_EXECUTOR.submit(worker, list(passed_accounts), target_user, target_asset)
     return jsonify({"success": True})
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
