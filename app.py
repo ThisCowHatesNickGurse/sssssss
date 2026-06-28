@@ -12,7 +12,7 @@ app = Flask(__name__)
 
 # --- Global State Tracking Matrix ---
 STATE = {
-    "accounts": [],
+    "accounts": [],  # Kept in memory for the active farming thread context
     "stop_farming_process": False,
     "receiver_username": "",
     "receiver_asset_id": "",
@@ -182,7 +182,6 @@ def background_farm_loop():
 
         if STATE["stop_farming_process"]: break
         
-        # New Requirement: Wait 70 seconds after Batch 3 payout before starting a new round of batches
         emit_log("Round finished. Waiting 70-second buffer interval before resetting to Batch 1...")
         for remaining in range(70, 0, -1):
             if STATE["stop_farming_process"]: break
@@ -204,6 +203,12 @@ def home():
 def get_state():
     return jsonify(STATE)
 
+@app.route('/sync-accounts', methods=['POST'])
+def sync_accounts():
+    # Frontend updates the server memory instance before starting tasks
+    STATE["accounts"] = request.json.get("accounts", [])
+    return jsonify({"success": True})
+
 @app.route('/toggle-config', methods=['POST'])
 def toggle_config():
     opt = request.json.get("option")
@@ -218,7 +223,9 @@ def update_price():
 
 @app.route('/start-farm', methods=['POST'])
 def start_farm():
-    if not STATE["accounts"]: return jsonify({"error": "No accounts"}), 400
+    # Make sure we pull active context loaded from client localStorage
+    STATE["accounts"] = request.json.get("accounts", [])
+    if not STATE["accounts"]: return jsonify({"error": "No accounts provided"}), 400
     STATE["stop_farming_process"] = False
     GLOBAL_EXECUTOR.submit(background_farm_loop)
     return jsonify({"success": True})
@@ -229,21 +236,14 @@ def stop_farm():
     STATE["status"] = "Aborting Pipeline..."
     return jsonify({"success": True})
 
-@app.route('/clear-accounts', methods=['POST'])
-def clear_accounts():
-    STATE["accounts"] = []
-    emit_log("Account registry wiped.")
-    return jsonify({"success": True})
-
 @app.route('/set-target', methods=['POST'])
 def set_target():
     username = request.json.get("username")
-    acc = next((a for a in STATE["accounts"] if a["username"] == username), None)
-    if not acc: return jsonify({"error": "Not found"}), 404
+    password = request.json.get("password", "")
     
     def worker():
         emit_log(f"Connecting validation routine for receiver [{username}]...")
-        sess = get_auth_session(username, acc["password"])
+        sess = get_auth_session(username, password)
         if not sess:
             emit_log(f"Authentication failed for [{username}]")
             return
@@ -266,43 +266,48 @@ def set_target():
 @app.route('/bulk-signup', methods=['POST'])
 def bulk_signup():
     emit_log("Spawning thread pool registration processes (10 Accounts)...")
+    new_accounts = []
+    
     def task():
         u = make_rand_str(9)
         p = make_rand_str(12)
         try:
             res = requests.post(ENDPOINTS["signup"], json={"username": u, "password": p}, timeout=10)
             if res.status_code in [200, 201]:
-                STATE["accounts"].append({"username": u, "password": p, "points": 0, "diamonds": 0})
+                new_accounts.append({"username": u, "password": p, "points": 0, "diamonds": 0})
                 emit_log(f"Created account: {u}")
                 sess = get_auth_session(u, p)
                 if sess and STATE["avatar_url"]:
                     sess.patch(ENDPOINTS["profile"], json={"profileImageUrl": STATE["avatar_url"]}, timeout=10)
         except Exception: pass
 
-    def pool_mgr():
-        with ThreadPoolExecutor(max_workers=5) as sub_pool:
-            futures = [sub_pool.submit(task) for _ in range(10)]
-            for f in futures: f.result()
-        emit_log("Bulk profile generation finalized.")
-
-    GLOBAL_EXECUTOR.submit(pool_mgr)
-    return jsonify({"success": True})
+    with ThreadPoolExecutor(max_workers=5) as sub_pool:
+        futures = [sub_pool.submit(task) for _ in range(10)]
+        for f in futures: f.result()
+        
+    emit_log("Bulk profile generation finalized.")
+    return jsonify({"success": True, "created": new_accounts})
 
 @app.route('/execute-siphon', methods=['POST'])
 def execute_siphon():
+    # Requirement: Read dynamic account list configurations passed entirely via the localStorage HTTP request
+    passed_accounts = request.json.get("accounts", [])
+    if not passed_accounts:
+        return jsonify({"error": "No accounts data passed from client storage layout"}), 400
+        
     if not STATE["receiver_username"] or not STATE["receiver_asset_id"]:
-        return jsonify({"error": "No receiver"}), 400
+        return jsonify({"error": "No receiver targets verified"}), 400
     try: price = int(STATE["siphon_price"])
     except ValueError: return jsonify({"error": "Invalid price"}), 400
 
     def worker():
         emit_log(f"🔮 Initializing Pre-Owned Asset Extraction Matrix targeting [{STATE['receiver_username']}]...")
-        receiver_acc = next((a for a in STATE["accounts"] if a["username"] == STATE["receiver_username"]), None)
+        receiver_acc = next((a for a in passed_accounts if a["username"] == STATE["receiver_username"]), None)
         if not receiver_acc:
-            emit_log("Fatal: Couldn't look up local target receiver credentials.")
-            return
+            emit_log(f"⚠️ Target [{STATE['receiver_username']}] not matching local registry list. Bypassing fallback checks...")
+            receiver_acc = {"username": STATE["receiver_username"], "password": ""}
 
-        for acc in STATE["accounts"]:
+        for acc in passed_accounts:
             if STATE["stop_farming_process"]: break
             if acc["username"] == STATE["receiver_username"]: continue
 
@@ -327,9 +332,9 @@ def execute_siphon():
 
             while balance >= price and not STATE["stop_farming_process"]:
                 emit_log("Listing asset from Receiver account...")
-                recv_sess = get_auth_session(receiver_acc["username"], receiver_acc["password"])
+                recv_sess = get_auth_session(receiver_acc["username"], receiver_acc.get("password", ""))
                 if not recv_sess:
-                    emit_log("Fatal: Receiver primary account re-auth step failed!")
+                    emit_log("Fatal: Receiver primary account validation step failed! Check credentials.")
                     break
 
                 list_payload = {"action": "list", "creatureId": STATE["receiver_asset_id"], "price": price, "priceType": "diamonds"}
