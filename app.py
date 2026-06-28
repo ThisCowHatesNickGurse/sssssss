@@ -16,6 +16,8 @@ STATE = {
     "stop_farming_process": False,
     "receiver_username": "",
     "receiver_asset_id": "",
+    "ext_receiver_username": "",
+    "ext_receiver_asset_id": "",  # Automatically cached upon verification check
     "avatar_url": "https://files.catbox.moe/fl4o79.jpg",
     "siphon_price": "1",
     "chk_collect": True,
@@ -39,8 +41,7 @@ ENDPOINTS = {
     "callback": f"{BASE_URL}/auth/callback/credentials",
     "creatures": f"{BASE_URL}/creatures",
     "trade": f"{BASE_URL}/trade",
-    "signup": f"{BASE_URL}/signup",
-    "market": f"{BASE_URL}/trade?type=market"
+    "signup": f"{BASE_URL}/signup"
 }
 
 GLOBAL_EXECUTOR = ThreadPoolExecutor(max_workers=5)
@@ -415,7 +416,41 @@ def refresh_stats():
     GLOBAL_EXECUTOR.submit(refresh_worker)
     return jsonify({"success": True})
 
-# --- Feature Modification: External Main Account Siphon Pipeline ---
+# --- Modification: Fetch External Main Account Asset Structure ---
+@app.route('/fetch-external-assets', methods=['POST'])
+def fetch_external_assets():
+    req_data = request.get_json(force=True) or {}
+    ext_user = req_data.get("external_username", "").strip()
+    ext_pass = req_data.get("external_password", "").strip()
+
+    if not ext_user or not ext_pass:
+        return jsonify({"error": "Missing external authentication inputs"}), 400
+
+    def asset_worker():
+        emit_log(f"🔍 Validating External profile credentials for [{ext_user}]...")
+        sess = get_auth_session(ext_user, ext_pass)
+        if not sess:
+            emit_log(f"❌ Handshake failed. Verification rejected for [{ext_user}].")
+            return
+        try:
+            res = sess.get(ENDPOINTS["creatures"], timeout=10)
+            if res.status_code == 200:
+                c_list = res.json().get("creatures", [])
+                if c_list:
+                    STATE["ext_receiver_username"] = ext_user
+                    STATE["ext_receiver_asset_id"] = c_list[0].get("id")
+                    emit_log(f"🎯 External Target Locked. Verified pre-owned Asset ID: [{STATE['ext_receiver_asset_id']}]")
+                else:
+                    emit_log(f"❌ Authentication complete, but external account [{ext_user}] holds no valid pet assets.")
+            else:
+                emit_log(f"❌ Failed to extract asset matrix from external account creatures schema.")
+        except Exception as e:
+            emit_log(f"❌ Network verification failure: {str(e)}")
+
+    GLOBAL_EXECUTOR.submit(asset_worker)
+    return jsonify({"success": True})
+
+# --- Modification: Execute External Pre-Owned Siphon Matrix ---
 @app.route('/execute-external-siphon', methods=['POST'])
 def execute_external_siphon():
     req_data = request.get_json(force=True) or {}
@@ -427,95 +462,58 @@ def execute_external_siphon():
     if not ext_user or not ext_pass or not target_alt_user:
         return jsonify({"error": "Missing validation tracking contexts"}), 400
 
+    if STATE["ext_receiver_username"] != ext_user or not STATE["ext_receiver_asset_id"]:
+        return jsonify({"error": "Please click 'Fetch External Assets' to verify targets first."}), 400
+
     alt_acc = next((a for a in passed_accounts if a["username"] == target_alt_user), None)
     if not alt_acc:
-        return jsonify({"error": "Selected alt profile missing from cache"}), 400
+        return jsonify({"error": "Selected alt profile missing from layout cache"}), 400
 
     def external_worker():
-        emit_log(f"🔮 Spawning External Main Handshake Session for [{ext_user}]...")
+        emit_log(f"🔮 Initializing External Siphon Sequence targeting [{ext_user}]...")
         ext_sess = get_auth_session(ext_user, ext_pass)
-        if not ext_sess:
-            emit_log("❌ Failed to validate external account credentials.")
-            return
-
         alt_sess = get_auth_session(alt_acc["username"], alt_acc["password"])
-        if not alt_sess:
-            emit_log(f"❌ Failed to authenticate chosen alt profile [{alt_acc['username']}]")
+
+        if not ext_sess or not alt_sess:
+            emit_log("❌ Verification token build timeout. Ensure input credentials match parameters.")
             return
 
         alt_ud = fetch_user_data(alt_sess)
         if not alt_ud or alt_ud["diamonds"] <= 0:
-            emit_log(f"❌ Target Alt [{alt_acc['username']}] has no diamonds available to buy listings.")
+            emit_log(f"❌ Target Alt [{alt_acc['username']}] has no diamonds to capture. Execution halted.")
             return
 
         siphon_total_price = alt_ud["diamonds"]
-        emit_log(f"ℹ️ Locked target balance: {siphon_total_price} 💎 inside wallet of [{alt_acc['username']}]")
+        vehicle_id = STATE["ext_receiver_asset_id"]
+        emit_log(f"ℹ️ Draining {siphon_total_price} 💎 using pre-owned External Asset vehicle: [{vehicle_id}]")
 
         try:
-            # Step 1: Request active market index metrics to pull a generic $1 item vehicle
-            emit_log("Querying open public market endpoints for trade vehicle asset allocation...")
-            market_res = ext_sess.get(ENDPOINTS["market"], timeout=10)
-            if market_res.status_code != 200:
-                emit_log("❌ Public market registry indexing query failure.")
+            # Step 1: External account lists its own pet asset directly for the alt's full wallet size
+            emit_log(f"Listing pre-owned asset [{vehicle_id}] from External Main account for {siphon_total_price} 💎...")
+            list_payload = {"action": "list", "creatureId": vehicle_id, "price": siphon_total_price, "priceType": "diamonds"}
+            if ext_sess.post(ENDPOINTS["trade"], json=list_payload, timeout=10).status_code != 200:
+                emit_log("❌ Failed to register market trade listing from External Main account.")
                 return
 
-            market_creatures = market_res.json().get("creatures", [])
-            # Filter entries matching strict structural rule: tradePrice == 1 and type == diamonds
-            eligible = [c for c in market_creatures if c.get("tradePrice") == 1 and c.get("tradePriceType") == "diamonds"]
+            time.sleep(1.5)
 
-            if not eligible:
-                emit_log("❌ No active public market items found listed at 1 Diamond baseline constraint.")
-                return
-
-            selected_vehicle = random.choice(eligible)
-            vehicle_id = selected_vehicle["id"]
-            emit_log(f"🎯 Vehicle acquired. Selected creature asset ID: [{vehicle_id}] from market index.")
-
-            # Step 2: External main purchases the 1 diamond listing vehicle item
-            emit_log(f"Buying item [{vehicle_id}] from market into External main wallet...")
-            buy_req = ext_sess.post(ENDPOINTS["trade"], json={"action": "buy", "creatureId": vehicle_id}, timeout=10)
-            if buy_req.status_code != 200:
-                emit_log("❌ External buy configuration handshake failed. Check external diamond balances.")
-                return
-
-            time.sleep(2.0)
-
-            # Step 3: External main puts it back on the market for the alt's entire balance size
-            emit_log(f"Relisting asset [{vehicle_id}] from External main for total wallet payload value: {siphon_total_price} 💎...")
-            list_req = ext_sess.post(ENDPOINTS["trade"], json={
-                "action": "list",
-                "creatureId": vehicle_id,
-                "price": siphon_total_price,
-                "priceType": "diamonds"
-            }, timeout=10)
-            if list_req.status_code != 200:
-                emit_log("❌ Failed to list intermediate asset vehicle on public exchange ledger.")
-                return
-
-            time.sleep(2.0)
-
-            # Step 4: Alternative account completes the buy payload to clear funds
-            emit_log(f"Executing transfer buy handshake from Alt account [{alt_acc['username']}]...")
-            alt_buy_req = alt_sess.post(ENDPOINTS["trade"], json={"action": "buy", "creatureId": vehicle_id}, timeout=10)
-            if alt_buy_req.status_code != 200:
-                emit_log("❌ Alt buyout routine rejected or transaction intercepted.")
+            # Step 2: Alternative account completes the buy transaction to finalize payout extraction
+            emit_log(f"Executing buy handshake transaction from Alt profile [{alt_acc['username']}]...")
+            if alt_sess.post(ENDPOINTS["trade"], json={"action": "buy", "creatureId": vehicle_id}, timeout=10).status_code != 200:
+                emit_log("❌ Purchase transaction rejected or expired.")
                 return
 
             time.sleep(3.2)
 
-            # Step 5: Alt gifts the creature vehicle item right back to the external account cleanly
-            emit_log(f"Returning asset item [{vehicle_id}] back to External Main account layout...")
-            gift_req = alt_sess.post(ENDPOINTS["trade"], json={
-                "action": "gift",
-                "creatureId": vehicle_id,
-                "toUsername": ext_user
-            }, timeout=10)
+            # Step 3: Alt profile returns the asset vehicle immediately back to the external configuration
+            emit_log(f"Gifting asset vehicle [{vehicle_id}] safely back to External Main account layout...")
+            alt_sess.post(ENDPOINTS["trade"], json={"action": "gift", "creatureId": vehicle_id, "toUsername": ext_user}, timeout=10)
 
             alt_acc["diamonds"] = 0
-            emit_log(f"🎉 External Siphon Success! Moved {siphon_total_price} 💎 to [{ext_user}] and returned vehicle asset cleanly.")
+            emit_log(f"🎉 External Siphon Matrix finalized. Successfully sent {siphon_total_price} 💎 directly to [{ext_user}].")
 
         except Exception as e:
-            emit_log(f"❌ Internal anomaly running external target siphon matrix sequence: {str(e)}")
+            emit_log(f"❌ Internal anomaly executing pre-owned asset handshake transfer sequence: {str(e)}")
 
     GLOBAL_EXECUTOR.submit(external_worker)
     return jsonify({"success": True})
