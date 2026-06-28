@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Furrymon Multi-Hub Mobile</title>
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+    <style>
+        :root { --bg: #1e1e2e; --panel: #282a36; --accent: #bd93f9; --text: #f8f8f2; --pink: #ff79c6; --green: #50fa7b; --red: #ff5555; --orange: #ffb86c; }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        body { background: var(--bg); color: var(--text); padding: 12px; font-size: 14px; }
+        .container { max-width: 500px; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; }
+        h1 { font-size: 18px; color: var(--accent); text-align: center; margin: 5px 0; }
+        .card { background: var(--panel); border: 1px solid #44475a; border-radius: 8px; padding: 12px; }
+        .status-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 5px; }
+        .stat-box { background: #21222c; padding: 8px; border-radius: 4px; font-weight: bold; }
+        .btn { display: block; width: 100%; padding: 12px; text-align: center; border: none; border-radius: 6px; font-weight: bold; color: #fff; cursor: pointer; font-size: 13px; margin: 6px 0; }
+        .btn-farm { background: var(--pink); } .btn-stop { background: var(--red); } .btn-siphon { background: var(--orange); color: #000; } .btn-sub { background: var(--accent); }
+        .checkbox-group { display: flex; flex-direction: column; gap: 8px; margin: 5px 0; }
+        .checkbox-item { display: flex; align-items: center; gap: 8px; }
+        input[type="text"], input[type="number"] { width: 100%; padding: 10px; background: #1e1e2e; border: 1px solid #6272a4; color: #fff; border-radius: 4px; margin: 4px 0; font-size: 13px; }
+        .log-console { background: #1e1e2e; border: 1px solid #44475a; height: 160px; overflow-y: auto; font-family: monospace; padding: 8px; font-size: 11px; border-radius: 4px; white-space: pre-wrap; }
+        .account-row { background: #21222c; border: 1px solid #44475a; padding: 8px; border-radius: 4px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+        .btn-sm { padding: 4px 8px; font-size: 11px; border-radius: 3px; border: none; cursor: pointer; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Furrymon Multi-Hub Mobile</h1>
+        
+        <div class="card">
+            <div class="status-grid">
+                <div class="stat-box" id="status" style="color:var(--red)">Status: Idle</div>
+                <div class="stat-box" id="batch" style="color:var(--pink)">Batch 0/3</div>
+                <div class="stat-box" id="countdown" style="color:var(--orange)">Next In: 0s</div>
+                <div class="stat-box" id="total-accs" style="color:#8be9fd">Managed: 0</div>
+            </div>
+            <button class="btn btn-farm" onclick="apiCall('/start-farm')">🚀 START PARALLEL FARMING</button>
+            <button class="btn btn-stop" onclick="apiCall('/stop-farm')">🛑 STOP ALL ACTIONS</button>
+        </div>
+
+        <div class="card">
+            <div class="checkbox-group">
+                <label class="checkbox-item"><input type="checkbox" id="chk-collect" checked onchange="toggleOption('chk_collect')"> Auto-Collect Habitats Every Cycle</label>
+                <label class="checkbox-item"><input type="checkbox" id="chk-exchange" checked onchange="toggleOption('chk_exchange')"> Auto-Buy Reward-7 (900 Pts Check)</label>
+            </div>
+        </div>
+
+        <div class="card">
+            <h3 style="color:var(--orange);margin-bottom:4px;">💎 Diamond Siphon Matrix v2</h3>
+            <input type="text" id="target-user" placeholder="Target Receiver: None" readonly>
+            <input type="text" id="target-asset" placeholder="Target Asset ID: None" readonly>
+            <input type="number" id="siphon-price" value="1" onchange="updateSiphonPrice(this.value)">
+            <button class="btn btn-siphon" onclick="apiCall('/execute-siphon')">📥 Siphon All Diamonds to Target</button>
+        </div>
+
+        <div class="card">
+            <h3 style="color:var(--accent);margin-bottom:4px;">Account Tools</h3>
+            <div style="display:grid;grid-template-columns: 1fr 1fr; gap:6px;">
+                <button class="btn-sm btn-sub" style="padding:10px;" onclick="apiCall('/bulk-signup')">+ Bulk 10 Alts</button>
+                <button class="btn-sm btn-stop" style="padding:10px;" onclick="if(confirm('Wipe registry?')) apiCall('/clear-accounts')">🗑️ Clear All</button>
+            </div>
+            <div id="accounts-list" style="margin-top:10px; max-height:200px; overflow-y:auto;"></div>
+        </div>
+
+        <div class="card">
+            <h3 style="color:var(--accent);margin-bottom:4px;">System Log Console Output</h3>
+            <div class="log-console" id="log-output"></div>
+        </div>
+    </div>
+
+    <script>
+        function apiCall(endpoint) { axios.post(endpoint); }
+        function toggleOption(opt) { axios.post('/toggle-config', {option: opt}); }
+        function updateSiphonPrice(val) { axios.post('/update-price', {price: val}); }
+        function selectTarget(user) { axios.post('/set-target', {username: user}); }
+
+        function updateDashboard() {
+            axios.get('/state').then(res => {
+                const data = res.data;
+                document.getElementById('status').innerText = 'Status: ' + data.status;
+                document.getElementById('status').style.color = data.status.includes('RUNNING') ? 'var(--green)' : 'var(--red)';
+                document.getElementById('batch').innerText = 'Phase: ' + data.batch_phase;
+                document.getElementById('countdown').innerText = 'Next In: ' + data.countdown + 's';
+                document.getElementById('total-accs').innerText = 'Managed: ' + data.accounts.length;
+                document.getElementById('target-user').value = data.receiver_username ? 'Receiver: ' + data.receiver_username : '';
+                document.getElementById('target-asset').value = data.receiver_asset_id ? 'Asset: ' + data.receiver_asset_id : '';
+                
+                const logBox = document.getElementById('log-output');
+                const isScrolledToBottom = logBox.scrollHeight - logBox.clientHeight <= logBox.scrollTop + 1;
+                logBox.innerText = data.logs.join('\n');
+                if (isScrolledToBottom) { logBox.scrollTop = logBox.scrollHeight; }
+
+                let accHtml = '';
+                data.accounts.forEach(acc => {
+                    accHtml += `<div class="account-row">
+                        <div>
+                            <strong>${acc.username}</strong><br>
+                            <span style="color:var(--green)">💎 ${acc.diamonds || 0} | 🏆 ${acc.points || 0} Pts</span>
+                        </div>
+                        <button class="btn-sm btn-sub" onclick="selectTarget('${acc.username}')">🎯 Target</button>
+                    </div>`;
+                });
+                document.getElementById('accounts-list').innerHTML = accHtml;
+            });
+        }
+        setInterval(updateDashboard, 1000);
+    </script>
+</body>
+</html>
