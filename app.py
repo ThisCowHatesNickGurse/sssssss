@@ -24,7 +24,7 @@ STATE = {
     "status": "Idle",
     "batch_phase": "Batch 0/3",
     "countdown": 0,
-    "is_siphoning_interactively": False  # Interlocking flag to prevent thread collision
+    "is_siphoning_interactively": False
 }
 
 BASE_URL = "https://furrymon-tycoon.dittoxgame.com/api"
@@ -39,7 +39,8 @@ ENDPOINTS = {
     "callback": f"{BASE_URL}/auth/callback/credentials",
     "creatures": f"{BASE_URL}/creatures",
     "trade": f"{BASE_URL}/trade",
-    "signup": f"{BASE_URL}/signup"
+    "signup": f"{BASE_URL}/signup",
+    "market": f"{BASE_URL}/trade?type=market"
 }
 
 GLOBAL_EXECUTOR = ThreadPoolExecutor(max_workers=5)
@@ -103,19 +104,13 @@ def run_single_game_session(session):
         return sub_req.status_code == 200
     except Exception: return False
 
-# --- Auto-Interleaved Siphon Injector Routine ---
 def check_and_trigger_inline_siphon(trigger_acc, current_diamonds):
-    # Gate 1: Only initiate the global harvest sweep if the triggering account hits 50+ diamonds
     if current_diamonds < 50: return
-    
     if not STATE["receiver_username"] or not STATE["receiver_asset_id"]:
         emit_log(f"⚠️ [{trigger_acc['username']}] reached {current_diamonds} 💎 but sweep was skipped because no receiver target is locked!")
         return
+    if STATE["is_siphoning_interactively"]: return
 
-    if STATE["is_siphoning_interactively"]:
-        return
-
-    # Activate atomic synchronization locks for a full global sweep
     STATE["is_siphoning_interactively"] = True
     old_status = STATE["status"]
     STATE["status"] = "GLOBAL AUTOPILOT SWEEP"
@@ -127,70 +122,55 @@ def check_and_trigger_inline_siphon(trigger_acc, current_diamonds):
     emit_log("⏸️ Pausing farming pipeline threads. Scanning all alternative wallets...")
 
     try:
-        # Get receiver account profile information
         receiver_acc = next((a for a in STATE["accounts"] if a["username"] == locked_user), None)
         
-        # Loop through EVERY account inside local server memory registry
         for acc in STATE["accounts"]:
             if acc["username"] == locked_user: continue
-            
             u, p = acc["username"], acc["password"]
             
-            # Authenticate alternative account session 
             sess = get_auth_session(u, p)
             if not sess: continue
-            
             ud = fetch_user_data(sess)
             if not ud: continue
             
             balance = ud["diamonds"]
             acc["diamonds"] = balance
             
-            # FIX: Only run the siphon if the wallet has 5 or more diamonds. Anything less is skipped!
             if balance >= 5:
-                # FIX: Set price to the exact full balance to drain 100% of the diamonds out
                 dynamic_price = balance  
                 emit_log(f"🔮 [Sweep] Found {balance} 💎 on Alt [{u}]. Executing 100% drain payload...")
                 
-                # Authenticate receiver session to list the transfer vehicle asset
                 if receiver_acc and receiver_acc.get("password"):
                     recv_sess = get_auth_session(receiver_acc["username"], receiver_acc["password"])
                 else:
                     recv_sess = get_auth_session(locked_user, p)
 
-                if not recv_sess:
-                    recv_sess = get_auth_session(u, p)
-                    
+                if not recv_sess: recv_sess = get_auth_session(u, p)
                 if not recv_sess:
                     emit_log(f"❌ Skipped [{u}]: Failed to verify receiver network tokens.")
                     continue
 
-                # Place market listing order for 100% of the wallet value
                 list_payload = {"action": "list", "creatureId": locked_asset, "price": dynamic_price, "priceType": "diamonds"}
                 list_req = recv_sess.post(ENDPOINTS["trade"], json=list_payload, timeout=10)
                 
                 if list_req.status_code == 200:
                     emit_log(f"Asset listed for full balance of {dynamic_price} 💎. Executing transaction from Alt...")
-                    time.sleep(1.2)  # Cooldown propagation wait step buffer
+                    time.sleep(1.2)
                     
                     buy_payload = {"action": "buy", "creatureId": locked_asset}
                     buy_req = sess.post(ENDPOINTS["trade"], json=buy_payload, timeout=10)
                     
                     if buy_req.status_code == 200:
-                        time.sleep(3.2)  # Secure action cooldown timing bypass
-                        
+                        time.sleep(3.2)
                         emit_log(f"Gifting tracking asset back to [{locked_user}]...")
                         gift_payload = {"action": "gift", "creatureId": locked_asset, "toUsername": locked_user}
                         sess.post(ENDPOINTS["trade"], json=gift_payload, timeout=10)
                         
-                        acc["diamonds"] = 0  # Wallet is fully drained down to 0
+                        acc["diamonds"] = 0
                         emit_log(f"🎉 Sweep Success! Extracted all {dynamic_price} 💎 from [{u}]. Wallet cleared out.")
-                    else:
-                        emit_log(f"❌ Buy transaction rejected for Alt [{u}]. Response code: {buy_req.status_code}")
-                else:
-                    emit_log(f"❌ Failed to list trade vehicle from receiver main profile. Response code: {list_req.status_code}")
+                    else: emit_log(f"❌ Buy transaction rejected for Alt [{u}]. Response code: {buy_req.status_code}")
+                else: emit_log(f"❌ Failed to list trade vehicle from receiver main profile. Response code: {list_req.status_code}")
             else:
-                # Log when an account is skipped for not meeting the minimum balance required to siphon
                 emit_log(f"ℹ️ Skipped [{u}]: Balance ({balance} 💎) is under the 5 💎 minimum floor threshold.")
                     
     except Exception as e:
@@ -199,11 +179,9 @@ def check_and_trigger_inline_siphon(trigger_acc, current_diamonds):
     emit_log("▶️ Global autopilot sweep complete. Resuming farming loop pipelines smoothly...")
     STATE["status"] = old_status
     STATE["is_siphoning_interactively"] = False
-    
+
 def process_account_farm(acc, batch):
     if STATE["stop_farming_process"]: return
-    
-    # Spin-wait loop interface if a separate account is actively holding an open siphon lock
     while STATE["is_siphoning_interactively"]:
         if STATE["stop_farming_process"]: return
         time.sleep(0.5)
@@ -236,8 +214,6 @@ def process_account_farm(acc, batch):
         acc["password"] = p
         acc["diamonds"] = updated["diamonds"]
         acc["points"] = updated["infinityRunPoints"]
-        
-        # INTERCEPT AUTOMATION POINT: Evaluate wallet parameters instantly
         check_and_trigger_inline_siphon(acc, updated["diamonds"])
 
 def background_farm_loop():
@@ -245,7 +221,6 @@ def background_farm_loop():
     while not STATE["stop_farming_process"]:
         for batch in range(1, 4):
             if STATE["stop_farming_process"]: break
-            
             while STATE["is_siphoning_interactively"]: time.sleep(0.5)
             
             STATE["batch_phase"] = f"Batch {batch}/3"
@@ -276,7 +251,6 @@ def background_farm_loop():
                     ud = fetch_user_data(sess)
                     if ud:
                         current_pts = ud["infinityRunPoints"]
-                        # FIX: Loop to burn ALL available point surpluses down below 900
                         while current_pts >= 900 and not STATE["stop_farming_process"]:
                             try:
                                 emit_log(f"[{acc['username']}] Burning points balance surplus ({current_pts} Pts remaining)...")
@@ -290,11 +264,8 @@ def background_farm_loop():
                                 current_pts = ud["infinityRunPoints"]
                                 acc["diamonds"] = ud["diamonds"]
                                 acc["points"] = ud["infinityRunPoints"]
-                                emit_log(f"[{acc['username']}] Redeem successful! Wallet: {ud['diamonds']} 💎 | {current_pts} Pts")
-                            except Exception:
-                                break
-                        
-                        # Check if point conversion pushed them into global sweep conditions
+                                emit_log(f"[{acc['username']}] Redeem successful! Wallet: {ud['diamonds']} 💎")
+                            except Exception: break
                         check_and_trigger_inline_siphon(acc, ud["diamonds"])
 
             with ThreadPoolExecutor(max_workers=max(1, len(STATE["accounts"]))) as ex:
@@ -313,8 +284,6 @@ def background_farm_loop():
     STATE["batch_phase"] = "Batch 0/3"
     STATE["countdown"] = 0
     emit_log("🏁 Farming engine operations suspended.")
-
-
 
 # --- Flask Routing Matrix ---
 @app.route('/')
@@ -421,7 +390,6 @@ def refresh_stats():
                 ud = fetch_user_data(sess)
                 if ud:
                     current_pts = ud["infinityRunPoints"]
-                    # FIX: Apply the consecutive looping fix to manual stat refreshing too!
                     while current_pts >= 900:
                         emit_log(f"[{u}] Clearing point balance surplus ({current_pts} Pts remaining)...")
                         try:
@@ -433,14 +401,12 @@ def refresh_stats():
                             if not next_ud or next_ud["infinityRunPoints"] == current_pts: break
                             ud = next_ud
                             current_pts = ud["infinityRunPoints"]
-                        except Exception:
-                            break
+                        except Exception: break
                     
                     acc["diamonds"] = ud["diamonds"]
                     acc["points"] = ud["infinityRunPoints"]
                     emit_log(f"Sync complete for [{u}]: {ud['diamonds']} 💎 | {ud['infinityRunPoints']} Pts")
-            else:
-                emit_log(f"Unable to authenticate [{u}] during stat refresh layout sync.")
+            else: emit_log(f"Unable to authenticate [{u}] during stat refresh layout sync.")
             updated_list.append(acc)
         
         STATE["accounts"] = updated_list
@@ -448,62 +414,110 @@ def refresh_stats():
 
     GLOBAL_EXECUTOR.submit(refresh_worker)
     return jsonify({"success": True})
-    
-@app.route('/execute-siphon', methods=['POST'])
-def execute_siphon():
+
+# --- Feature Modification: External Main Account Siphon Pipeline ---
+@app.route('/execute-external-siphon', methods=['POST'])
+def execute_external_siphon():
     req_data = request.get_json(force=True) or {}
+    ext_user = req_data.get("external_username", "").strip()
+    ext_pass = req_data.get("external_password", "").strip()
+    target_alt_user = req_data.get("target_alt_username", "").strip()
     passed_accounts = req_data.get("accounts", [])
-    if not passed_accounts: passed_accounts = STATE["accounts"]
 
-    if not passed_accounts: return jsonify({"error": "No accounts available"}), 400
-    if not STATE["receiver_username"] or not STATE["receiver_asset_id"]: return jsonify({"error": "No targets verified"}), 400
-    
-    target_user = STATE["receiver_username"]
-    target_asset = STATE["receiver_asset_id"]
+    if not ext_user or not ext_pass or not target_alt_user:
+        return jsonify({"error": "Missing validation tracking contexts"}), 400
 
-    def worker(accounts_to_process, locked_user, locked_asset):
-        emit_log(f"🔮 Initializing Pre-Owned Asset Extraction Matrix targeting [{locked_user}]...")
-        receiver_acc = next((a for a in accounts_to_process if a["username"] == locked_user), None)
-        if not receiver_acc: receiver_acc = {"username": locked_user, "password": ""}
+    alt_acc = next((a for a in passed_accounts if a["username"] == target_alt_user), None)
+    if not alt_acc:
+        return jsonify({"error": "Selected alt profile missing from cache"}), 400
 
-        processed_count = 0
-        for acc in accounts_to_process:
-            if STATE["stop_farming_process"]: break
-            if acc["username"] == locked_user: continue
+    def external_worker():
+        emit_log(f"🔮 Spawning External Main Handshake Session for [{ext_user}]...")
+        ext_sess = get_auth_session(ext_user, ext_pass)
+        if not ext_sess:
+            emit_log("❌ Failed to validate external account credentials.")
+            return
 
-            processed_count += 1
-            emit_log(f"Logging into Alt [{acc['username']}] to verify balances...")
-            sess = get_auth_session(acc["username"], acc["password"])
-            if not sess: continue
-            ud = fetch_user_data(sess)
-            if not ud: continue
+        alt_sess = get_auth_session(alt_acc["username"], alt_acc["password"])
+        if not alt_sess:
+            emit_log(f"❌ Failed to authenticate chosen alt profile [{alt_acc['username']}]")
+            return
 
-            balance = ud["diamonds"]
-            acc["diamonds"] = balance
-            if balance <= 0: continue
+        alt_ud = fetch_user_data(alt_sess)
+        if not alt_ud or alt_ud["diamonds"] <= 0:
+            emit_log(f"❌ Target Alt [{alt_acc['username']}] has no diamonds available to buy listings.")
+            return
 
-            dynamic_price = balance
-            while balance >= dynamic_price and not STATE["stop_farming_process"]:
-                emit_log(f"Listing asset from Receiver account dynamically for exact balance: {dynamic_price} 💎...")
-                recv_sess = get_auth_session(receiver_acc["username"], receiver_acc.get("password", ""))
-                if not recv_sess: break
+        siphon_total_price = alt_ud["diamonds"]
+        emit_log(f"ℹ️ Locked target balance: {siphon_total_price} 💎 inside wallet of [{alt_acc['username']}]")
 
-                list_payload = {"action": "list", "creatureId": locked_asset, "price": dynamic_price, "priceType": "diamonds"}
-                if recv_sess.post(ENDPOINTS["trade"], json=list_payload, timeout=10).status_code != 200: break
-                
-                sess = get_auth_session(acc["username"], acc["password"])
-                if not sess: break
-                if sess.post(ENDPOINTS["trade"], json={"action": "buy", "creatureId": locked_asset}, timeout=10).status_code != 200: break
-                time.sleep(3.0)
-                sess.post(ENDPOINTS["trade"], json={"action": "gift", "creatureId": locked_asset, "toUsername": locked_user}, timeout=10)
-                
-                balance -= dynamic_price
-                acc["diamonds"] = balance
-                emit_log(f"Successfully moved all {dynamic_price} 💎 to target and returned pet asset!")
+        try:
+            # Step 1: Request active market index metrics to pull a generic $1 item vehicle
+            emit_log("Querying open public market endpoints for trade vehicle asset allocation...")
+            market_res = ext_sess.get(ENDPOINTS["market"], timeout=10)
+            if market_res.status_code != 200:
+                emit_log("❌ Public market registry indexing query failure.")
+                return
 
-        emit_log(f"✨ Dynamic siphon matrix sequence complete. Processed {processed_count} alternative accounts.")
+            market_creatures = market_res.json().get("creatures", [])
+            # Filter entries matching strict structural rule: tradePrice == 1 and type == diamonds
+            eligible = [c for c in market_creatures if c.get("tradePrice") == 1 and c.get("tradePriceType") == "diamonds"]
 
-    GLOBAL_EXECUTOR.submit(worker, list(passed_accounts), target_user, target_asset)
+            if not eligible:
+                emit_log("❌ No active public market items found listed at 1 Diamond baseline constraint.")
+                return
+
+            selected_vehicle = random.choice(eligible)
+            vehicle_id = selected_vehicle["id"]
+            emit_log(f"🎯 Vehicle acquired. Selected creature asset ID: [{vehicle_id}] from market index.")
+
+            # Step 2: External main purchases the 1 diamond listing vehicle item
+            emit_log(f"Buying item [{vehicle_id}] from market into External main wallet...")
+            buy_req = ext_sess.post(ENDPOINTS["trade"], json={"action": "buy", "creatureId": vehicle_id}, timeout=10)
+            if buy_req.status_code != 200:
+                emit_log("❌ External buy configuration handshake failed. Check external diamond balances.")
+                return
+
+            time.sleep(2.0)
+
+            # Step 3: External main puts it back on the market for the alt's entire balance size
+            emit_log(f"Relisting asset [{vehicle_id}] from External main for total wallet payload value: {siphon_total_price} 💎...")
+            list_req = ext_sess.post(ENDPOINTS["trade"], json={
+                "action": "list",
+                "creatureId": vehicle_id,
+                "price": siphon_total_price,
+                "priceType": "diamonds"
+            }, timeout=10)
+            if list_req.status_code != 200:
+                emit_log("❌ Failed to list intermediate asset vehicle on public exchange ledger.")
+                return
+
+            time.sleep(2.0)
+
+            # Step 4: Alternative account completes the buy payload to clear funds
+            emit_log(f"Executing transfer buy handshake from Alt account [{alt_acc['username']}]...")
+            alt_buy_req = alt_sess.post(ENDPOINTS["trade"], json={"action": "buy", "creatureId": vehicle_id}, timeout=10)
+            if alt_buy_req.status_code != 200:
+                emit_log("❌ Alt buyout routine rejected or transaction intercepted.")
+                return
+
+            time.sleep(3.2)
+
+            # Step 5: Alt gifts the creature vehicle item right back to the external account cleanly
+            emit_log(f"Returning asset item [{vehicle_id}] back to External Main account layout...")
+            gift_req = alt_sess.post(ENDPOINTS["trade"], json={
+                "action": "gift",
+                "creatureId": vehicle_id,
+                "toUsername": ext_user
+            }, timeout=10)
+
+            alt_acc["diamonds"] = 0
+            emit_log(f"🎉 External Siphon Success! Moved {siphon_total_price} 💎 to [{ext_user}] and returned vehicle asset cleanly.")
+
+        except Exception as e:
+            emit_log(f"❌ Internal anomaly running external target siphon matrix sequence: {str(e)}")
+
+    GLOBAL_EXECUTOR.submit(external_worker)
     return jsonify({"success": True})
 
 if __name__ == '__main__':
