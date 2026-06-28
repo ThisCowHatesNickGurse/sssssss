@@ -103,9 +103,9 @@ def run_single_game_session(session):
         if not start_data.get("success"): return False
         
         game_token = start_data.get("gameToken")
-        time.sleep(3.1)  # Adjusted from 9.1 to 3.1 seconds
+        time.sleep(3.1)
 
-        sub_req = session.post(ENDPOINTS["submit"], json={"score": 30, "gameToken": game_token}, timeout=10)  # Adjusted from 900 to 30 score
+        sub_req = session.post(ENDPOINTS["submit"], json={"score": 30, "gameToken": game_token}, timeout=10)
         return sub_req.status_code == 200
     except Exception:
         return False
@@ -127,7 +127,7 @@ def process_account_farm(acc, batch):
         for f in futures:
             if f.result(): passes += 1
 
-    acc["points"] = user_data["infinityRunPoints"] + (passes * 30)  # Updated score accumulation math
+    acc["points"] = user_data["infinityRunPoints"] + (passes * 30)
 
     if STATE["chk_collect"]:
         try: sess.post(ENDPOINTS["collect"], json={}, timeout=10)
@@ -181,7 +181,14 @@ def background_farm_loop():
                 ex.map(redeem, STATE["accounts"])
 
         if STATE["stop_farming_process"]: break
-        time.sleep(2)
+        
+        # New Requirement: Wait 70 seconds after Batch 3 payout before starting a new round of batches
+        emit_log("Round finished. Waiting 70-second buffer interval before resetting to Batch 1...")
+        for remaining in range(70, 0, -1):
+            if STATE["stop_farming_process"]: break
+            STATE["countdown"] = remaining
+            time.sleep(1)
+        STATE["countdown"] = 0
 
     STATE["status"] = "Idle"
     STATE["batch_phase"] = "Batch 0/3"
@@ -289,35 +296,72 @@ def execute_siphon():
     except ValueError: return jsonify({"error": "Invalid price"}), 400
 
     def worker():
-        emit_log(f"🔮 Initializing Siphon Extraction Matrix targeting [{STATE['receiver_username']}]...")
+        emit_log(f"🔮 Initializing Pre-Owned Asset Extraction Matrix targeting [{STATE['receiver_username']}]...")
         receiver_acc = next((a for a in STATE["accounts"] if a["username"] == STATE["receiver_username"]), None)
-        if not receiver_acc: return
+        if not receiver_acc:
+            emit_log("Fatal: Couldn't look up local target receiver credentials.")
+            return
 
         for acc in STATE["accounts"]:
             if STATE["stop_farming_process"]: break
             if acc["username"] == STATE["receiver_username"]: continue
 
+            emit_log(f"Logging into Alt [{acc['username']}] to verify balances...")
             sess = get_auth_session(acc["username"], acc["password"])
-            if not sess: continue
+            if not sess:
+                emit_log(f"Could not login to [{acc['username']}] - Skipping.")
+                continue
+                
             ud = fetch_user_data(sess)
-            if not ud: continue
+            if not ud:
+                emit_log(f"Could not extract user stats for [{acc['username']}]")
+                continue
 
             balance = ud["diamonds"]
-            while balance >= price and not STATE["stop_farming_process"]:
-                recv_sess = get_auth_session(receiver_acc["username"], receiver_acc["password"])
-                if not recv_sess: break
+            acc["diamonds"] = balance
+            
+            emit_log(f"[{acc['username']}] has {balance} diamonds available.")
+            if balance < price:
+                emit_log(f"[{acc['username']}] balance less than required price ({price} 💎). Skipping.")
+                continue
 
-                if recv_sess.post(ENDPOINTS["trade"], json={"action": "list", "creatureId": STATE["receiver_asset_id"], "price": price, "priceType": "diamonds"}, timeout=10).status_code != 200: break
-                if sess.post(ENDPOINTS["trade"], json={"action": "buy", "creatureId": STATE["receiver_asset_id"]}, timeout=10).status_code != 200: break
+            while balance >= price and not STATE["stop_farming_process"]:
+                emit_log("Listing asset from Receiver account...")
+                recv_sess = get_auth_session(receiver_acc["username"], receiver_acc["password"])
+                if not recv_sess:
+                    emit_log("Fatal: Receiver primary account re-auth step failed!")
+                    break
+
+                list_payload = {"action": "list", "creatureId": STATE["receiver_asset_id"], "price": price, "priceType": "diamonds"}
+                if recv_sess.post(ENDPOINTS["trade"], json=list_payload, timeout=10).status_code != 200:
+                    emit_log("Error executing listing request from Receiver account.")
+                    break
                 
-                time.sleep(3.1)
-                sess.post(ENDPOINTS["trade"], json={"action": "gift", "creatureId": STATE["receiver_asset_id"], "toUsername": STATE["receiver_username"]}, timeout=10)
+                emit_log(f"Asset listed for {price} 💎. Swapping authentication back to Alt...")
+                sess = get_auth_session(acc["username"], acc["password"])
+                if not sess:
+                    emit_log(f"Failed to re-authenticate Alt [{acc['username']}]")
+                    break
+                
+                emit_log("Executing buy transaction from Alt account...")
+                buy_payload = {"action": "buy", "creatureId": STATE["receiver_asset_id"]}
+                if sess.post(ENDPOINTS["trade"], json=buy_payload, timeout=10).status_code != 200:
+                    emit_log("Buy transaction rejected. The listing may have expired or failed.")
+                    break
+                
+                emit_log("Waiting 3 seconds to bypass trade action cooldown...")
+                time.sleep(3.0)
+                
+                emit_log("Gifting asset back to the Receiver account...")
+                gift_payload = {"action": "gift", "creatureId": STATE["receiver_asset_id"], "toUsername": STATE["receiver_username"]}
+                if sess.post(ENDPOINTS["trade"], json=gift_payload, timeout=10).status_code != 200:
+                    emit_log("Warning: Gift sequence returned non-OK. Check for action cooldowns.")
                 
                 balance -= price
                 acc["diamonds"] = balance
-                emit_log(f"Moved {price} 💎 to target configuration successfully.")
+                emit_log(f"Successfully moved {price} 💎 to target and returned pet!")
 
-        emit_log("✨ Siphon sequence fully finalized.")
+        emit_log("✨ Siphon matrix sequence fully complete.")
 
     GLOBAL_EXECUTOR.submit(worker)
     return jsonify({"success": True})
